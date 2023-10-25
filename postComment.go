@@ -16,7 +16,7 @@ import (
 	"golang.org/x/oauth2"
 )
 
-func getJwtToken(keyFileContent []byte) string {
+func getJwtToken(keyFileContent []byte, applicationId int64) string {
 
 	key, err := jwt.ParseRSAPrivateKeyFromPEM(keyFileContent)
 	if err != nil {
@@ -25,7 +25,7 @@ func getJwtToken(keyFileContent []byte) string {
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
 		"iat": time.Now().Add(-60 * time.Second).Unix(),
-		"iss": 158946,
+		"iss": applicationId,
 		"exp": time.Now().Add(10 * time.Minute).Unix(),
 	})
 
@@ -39,15 +39,30 @@ func getJwtToken(keyFileContent []byte) string {
 func main() {
 
 	var keyPath string
-	flag.StringVar(&keyPath, "key-from-file", "", "path to the private key file")
+	flag.StringVar(&keyPath, "key-from-file", "", "Path to the private key file")
 	var keyEnvVar string
-	flag.StringVar(&keyEnvVar, "key-from-env-var", "", "name of the environment variable containing base64-encoded private key")
+	flag.StringVar(&keyEnvVar, "key-from-env-var", "", "Name of the environment variable containing base64-encoded private key")
 	var prNumber int
 	flag.IntVar(&prNumber, "pr-comment", 0, "PR number to post comment to")
-	var pipelineName string
-	flag.StringVar(&pipelineName, "pipeline", "", "Name of the pipeline")
-
+	var prefix string
+	flag.StringVar(&prefix, "prefix", "", "Prefix to detect existing comment. If not set, the first existing comment will be edited. If set the first comment starting with the prefix will be edited.")
+	var applicationId int64
+	flag.Int64Var(&applicationId, "application-id", 0, "ID of the GitHub application")
+	var repository string
+	flag.StringVar(&repository, "repository", "", "Name of the repository")
+	var org string
+	flag.StringVar(&org, "org", "", "Name of the organization")
 	flag.Parse()
+
+	if applicationId == 0 {
+		panic("no application id provided, please use -application-id flag")
+	}
+	if repository == "" {
+		panic("no repository provided, please use -repository flag")
+	}
+	if org == "" {
+		panic("no organization provided, please use -org flag")
+	}
 
 	// if --pr-number was set read text rom stdin
 	var text string
@@ -79,7 +94,7 @@ func main() {
 		panic("no private key provided, please use -key-from-file or -key-from-env-var flags")
 	}
 	ts := oauth2.StaticTokenSource(
-		&oauth2.Token{AccessToken: getJwtToken(keyFileContent)},
+		&oauth2.Token{AccessToken: getJwtToken(keyFileContent, applicationId)},
 	)
 	tc := oauth2.NewClient(ctx, ts)
 
@@ -88,30 +103,27 @@ func main() {
 	// find installation id
 	// https://docs.github.com/en/developers/apps/building-github-apps/authenticating-with-github-apps#authenticating-as-an-installation
 
-	// installations, _, err := client.Apps.ListInstallations(ctx, &github.ListOptions{})
-	// if err != nil {
-	// 	panic(err)
-	// }
+	installations, _, err := client.Apps.ListInstallations(ctx, &github.ListOptions{})
+	if err != nil {
+		panic(err)
+	}
 
-	// var installId int64
-	// for _, installation := range installations {
-	// 	if *installation.Account.Login == "redhat-developer" {
-	// 		installId = *installation.ID
-	// 		fmt.Println(installId)
-	// 	}
-	// }
-
-	var installId int64 = 21318258
+	var installId int64
+	var appSlug string
+	for _, installation := range installations {
+		if *installation.Account.Login == org {
+			installId = *installation.ID
+			appSlug = *installation.AppSlug
+		}
+	}
 
 	token, _, err := client.Apps.CreateInstallationToken(ctx, installId, &github.InstallationTokenOptions{})
 	if err != nil {
 		panic(err)
 	}
-	// b, _ := json.MarshalIndent(token, "", "  ")
-	// fmt.Println(string(b))
 
 	// create a client for the application installation
-	odoClient := github.NewClient(
+	installationClient := github.NewClient(
 		oauth2.NewClient(ctx,
 			oauth2.StaticTokenSource(
 				&oauth2.Token{AccessToken: *token.Token},
@@ -120,7 +132,7 @@ func main() {
 	)
 
 	if prNumber != 0 {
-		comments, _, err := odoClient.Issues.ListComments(ctx, "redhat-developer", "odo", prNumber, &github.IssueListCommentsOptions{})
+		comments, _, err := installationClient.Issues.ListComments(ctx, org, repository, prNumber, &github.IssueListCommentsOptions{})
 		if err != nil {
 			panic(err)
 		}
@@ -129,8 +141,8 @@ func main() {
 
 		for _, comment := range comments {
 
-			if *comment.User.Login == "odo-robot[bot]" {
-				if strings.HasPrefix(comment.GetBody(), pipelineName) {
+			if *comment.User.Login == fmt.Sprintf("%s[bot]", appSlug) {
+				if strings.HasPrefix(comment.GetBody(), prefix) {
 					existingComment = *comment.ID
 					fmt.Printf("detected existing comment id:%d\n", existingComment)
 					break
@@ -140,12 +152,12 @@ func main() {
 
 		var comment *github.IssueComment
 		if existingComment != 0 {
-			comment, _, err = odoClient.Issues.EditComment(ctx, "redhat-developer", "odo", existingComment,
+			comment, _, err = installationClient.Issues.EditComment(ctx, org, repository, existingComment,
 				&github.IssueComment{
 					Body: &text,
 				})
 		} else {
-			comment, _, err = odoClient.Issues.CreateComment(ctx, "redhat-developer", "odo", prNumber,
+			comment, _, err = installationClient.Issues.CreateComment(ctx, org, repository, prNumber,
 				&github.IssueComment{
 					Body: &text,
 				})

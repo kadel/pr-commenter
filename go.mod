@@ -1,4 +1,4 @@
-module github.com/kadel/odo-robot
+module github.com/kadel/pr-commenter
 
 go 1.17
 
