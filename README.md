@@ -4,9 +4,12 @@ PR Commenter is a tool to automate the process of commenting on GitHub pull requ
 
 ## Installation
 
+Download release from [GitHub Releases page](https://github.com/kadel/pr-commenter/releases) or install via `go install`:
+
 ```bash
 go install github.com/kadel/pr-commenter@latest
 ```
+
 
 ## Usage
 
